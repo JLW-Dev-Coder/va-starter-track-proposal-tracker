@@ -1,0 +1,12 @@
+{
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "name": "va-starter-track-proposal-tracker",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "type": "module",
+  "version": "1.0.0"
+}
