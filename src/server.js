@@ -120,18 +120,112 @@ app.get("/va-starter-track/c/:uid/overview", (req, res) => {
   const lastEvent = asString(record?.lastEvent) || "N/A";
   const lastUpdatedAt = asString(record?.lastUpdatedAt) || "N/A";
 
-  res.status(200).type("text/html").send(`<!doctype html>
+  res
+    .status(200)
+    .type("text/html")
+    .send(`<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>VA Starter Track • Overview</title>
+
+  <!-- ========================================= LENTAX — GLOBAL CASCADE (FAST) ========================================= -->
+  <style>
+    .lx-cascade{
+      opacity:0;
+      transform:translateY(12px);
+      transition: opacity 260ms ease, transform 260ms ease;
+      will-change:opacity, transform;
+    }
+    .lx-cascade.is-visible{
+      opacity:1;
+      transform:translateY(0);
+    }
+    @media (prefers-reduced-motion: reduce){
+      .lx-cascade{
+        opacity:1;
+        transform:none;
+        transition:none;
+      }
+    }
+
+    /* Page styling (kept lightweight; no external deps) */
+    .lx-wrap{
+      margin:0 auto;
+      max-width:980px;
+    }
+    .lx-body{
+      background:#0b1020;
+      color:rgba(255,255,255,0.92);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+      margin:0;
+      padding:24px;
+    }
+    .lx-card{
+      background:rgba(255,255,255,0.06);
+      border:1px solid rgba(255,255,255,0.14);
+      border-radius:16px;
+      padding:18px;
+    }
+    .lx-grid{
+      display:grid;
+      gap:16px;
+      grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
+      margin-top:16px;
+    }
+    .lx-kicker{
+      font-size:14px;
+      font-weight:900;
+      margin-bottom:10px;
+    }
+    .lx-name{
+      font-size:18px;
+      font-weight:900;
+      letter-spacing:.01em;
+    }
+    .lx-meta{
+      color:rgba(255,255,255,0.72);
+      font-size:13px;
+      line-height:1.6;
+      margin-top:6px;
+    }
+    .lx-note{
+      color:rgba(255,255,255,0.6);
+      font-size:12px;
+      line-height:1.6;
+      margin-top:16px;
+    }
+    .lx-pre{
+      color:rgba(255,255,255,0.75);
+      line-height:1.7;
+      white-space:pre-wrap;
+    }
+    .lx-avatar-img{
+      border:1px solid rgba(255,255,255,0.18);
+      border-radius:14px;
+      display:block;
+      height:auto;
+      max-width:260px;
+      width:100%;
+    }
+    .lx-empty{
+      background:rgba(255,255,255,0.04);
+      border:1px dashed rgba(255,255,255,0.22);
+      border-radius:12px;
+      color:rgba(255,255,255,0.75);
+      line-height:1.6;
+      padding:12px;
+    }
+  </style>
 </head>
-<body style="background:#0b1020;color:rgba(255,255,255,0.92);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;padding:24px;">
-  <div style="margin:0 auto;max-width:980px;">
-    <div style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);border-radius:16px;padding:18px;">
-      <div style="font-size:18px;font-weight:900;letter-spacing:.01em;">${escapeHtml(displayName)}</div>
-      <div style="color:rgba(255,255,255,0.72);font-size:13px;line-height:1.6;margin-top:6px;">
+
+<body class="lx-body">
+  <div class="lx-wrap">
+
+    <div class="lx-card lx-cascade">
+      <div class="lx-name">${escapeHtml(displayName)}</div>
+      <div class="lx-meta">
         <div><strong style="color:rgba(255,255,255,0.9);">Email:</strong> ${escapeHtml(email || "N/A")}</div>
         <div><strong style="color:rgba(255,255,255,0.9);">Last event:</strong> ${escapeHtml(lastEvent)}</div>
         <div><strong style="color:rgba(255,255,255,0.9);">Last updated:</strong> ${escapeHtml(lastUpdatedAt)}</div>
@@ -139,35 +233,63 @@ app.get("/va-starter-track/c/:uid/overview", (req, res) => {
       </div>
     </div>
 
-    <div style="display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin-top:16px;">
-      <div style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);border-radius:16px;padding:18px;">
-        <div style="font-size:14px;font-weight:900;margin-bottom:10px;">Avatar</div>
+    <div class="lx-grid">
+      <div class="lx-card lx-cascade">
+        <div class="lx-kicker">Avatar</div>
         ${
           record
             ? avatarUrl
-              ? `<img src="${escapeAttr(avatarUrl)}" alt="Avatar" style="border:1px solid rgba(255,255,255,0.18);border-radius:14px;display:block;height:auto;max-width:260px;width:100%;" />`
-              : `<div style="background:rgba(255,255,255,0.04);border:1px dashed rgba(255,255,255,0.22);border-radius:12px;color:rgba(255,255,255,0.75);padding:12px;line-height:1.6;">
+              ? `<img src="${escapeAttr(avatarUrl)}" alt="Avatar" class="lx-avatar-img" />`
+              : `<div class="lx-empty">
                    No avatar code found in backgroundInfo.<br />Add one of: FAF, FEU, FPH, MAF, MEU, MPH
                  </div>`
-            : `<div style="background:rgba(255,255,255,0.04);border:1px dashed rgba(255,255,255,0.22);border-radius:12px;color:rgba(255,255,255,0.75);padding:12px;line-height:1.6;">
+            : `<div class="lx-empty">
                  No webhook received yet for this UID.<br />Update the project so SuiteDash sends the payload.
                </div>`
         }
       </div>
 
-      <div style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);border-radius:16px;padding:18px;">
-        <div style="font-size:14px;font-weight:900;margin-bottom:10px;">Background info</div>
-        <div style="color:rgba(255,255,255,0.75);line-height:1.7;white-space:pre-wrap;">${escapeHtml(backgroundInfo || "N/A")}</div>
+      <div class="lx-card lx-cascade">
+        <div class="lx-kicker">Background info</div>
+        <div class="lx-pre">${escapeHtml(backgroundInfo || "N/A")}</div>
       </div>
     </div>
 
-    <div style="color:rgba(255,255,255,0.6);font-size:12px;line-height:1.6;margin-top:16px;">
+    <div class="lx-note lx-cascade">
       This v1 uses in-memory storage; redeploys clear records.
     </div>
+
   </div>
+
+  <!-- ========================================= LENTAX — GLOBAL CASCADE (FAST) ========================================= -->
+  <script>
+    (function () {
+      var items = Array.prototype.slice.call(document.querySelectorAll('.lx-cascade'));
+      if (!items.length) return;
+
+      var prefersReduced = false;
+      try { prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) {}
+
+      if (prefersReduced) {
+        items.forEach(function (el) { el.classList.add('is-visible'); });
+        return;
+      }
+
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (!entry.isIntersecting) return;
+          entry.target.classList.add('is-visible');
+          io.unobserve(entry.target);
+        });
+      }, { root: null, rootMargin: '0px 0px -10% 0px', threshold: 0.08 });
+
+      items.forEach(function (el) { io.observe(el); });
+    })();
+  </script>
 </body>
 </html>`);
 });
+
 
 /**
  * Debug endpoint (optional)
