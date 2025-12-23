@@ -1,54 +1,71 @@
 import express from "express";
-import path from "path";
-import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 
 /**
- * In-memory store (v1 testing)
- * Key: clientUID (SuiteDash payload client.uid)
- * Value: { avatarUrl: string, lastEvent: string, lastUpdatedAt: string, raw: object }
+ * In-memory store (v1)
+ * Key: uid (SuiteDash webhook payload "uid")
+ * Value: { avatarUrl, backgroundInfo, displayName, email, lastEvent, lastUpdatedAt, raw }
  */
 const store = new Map();
 
 /**
- * SuiteDash CF ID:
- * "SD Account Profile Nationality Est [SOP-10105]"
+ * Avatar map
+ * Keys: FAF, FEU, FPH, MAF, MEU, MPH
  */
-const CF_AVATAR_ID = "8b2f855a-6e87-4a1b-8623-dd28eced4373";
+const AVATAR_BY_CODE = {
+  FAF: "https://secure.lentax.co/file/351b93beeb66c8a329211653468f0ae8/e3e2f5ff-e2ae-4241-88cd-a4a1c3a1cfa1/PNG_Avatar_Female_AF_ChatGPT+Image+Dec+14%2C+2025%2C+05_32_41+PM.png?original=1",
+  FEU: "https://secure.lentax.co/file/aa3ab7fa7729005241c65ea63ae55564/f2a444b1-4af5-46d3-96d2-e7789686ec5f/ChatGPT+Image+Dec+19%2C+2025%2C+05_49_10+PM.png?original=1",
+  FPH: "https://secure.lentax.co/file/d2472423733e561f6195d60637b586de/172081ee-8936-4e0d-a169-0c493ddfdc4a/PNG_Avatar_Female_PH_ChatGPT+Image+Dec+19%2C+2025%2C+05_11_10+PM.png?versionID=34098",
+  MAF: "https://secure.lentax.co/file/cd70c77178c82438bc82583a9acc1da2/36921cc5-071a-49d4-b52c-14c04a06447e/PNG_Avatar_Male_AF_ChatGPT+Image+Dec+19%2C+2025%2C+05_11_00+PM.png?original=1",
+  MEU: "https://secure.lentax.co/file/20c48498124298ee493e9498f93d6857/fa8ad839-d47b-41f5-b5be-b7b2625bb78b/PNG_Avatar_Male_EU_ChatGPT+Image+Dec+19%2C+2025%2C+05_18_30+PM.png?versionID=34095",
+  MPH: "https://secure.lentax.co/file/23fa692e60bfa14eed53a565100008d0/1f2324b0-6e70-4965-9a3b-41bcad3c85b1/PNG_Avatar_Male+PH_ChatGPT+Image+Dec+18%2C+2025%2C+08_51_11+PM.png?versionID=34096",
+};
 
-function getClientUID(payload) {
-  return payload?.client?.uid || payload?.client_uid || payload?.clientUID || null;
+function asString(v) {
+  if (v == null) return "";
+  return typeof v === "string" ? v : String(v);
 }
 
-function getAvatarValue(payload) {
-  const v = payload?.project_custom_fields?.[CF_AVATAR_ID];
-  return typeof v === "string" ? v : v == null ? "" : String(v);
+function detectAvatarCode(backgroundInfo) {
+  // Looks for tokens like: MEU, FEU, FPH, MPH, MAF, FAF (case-insensitive)
+  const text = asString(backgroundInfo);
+  const m = text.match(/\b(FAF|FEU|FPH|MAF|MEU|MPH)\b/i);
+  return m ? m[1].toUpperCase() : "";
+}
+
+function computeAvatarUrl(payload) {
+  const backgroundInfo = asString(payload?.backgroundInfo);
+  const code = detectAvatarCode(backgroundInfo);
+  return AVATAR_BY_CODE[code] || "";
 }
 
 function handleWebhook(req, res) {
   const payload = req.body || {};
-  const clientUID = getClientUID(payload);
+  const uid = asString(payload?.uid);
 
-  if (!clientUID) {
+  if (!uid) {
     res.status(400).json({
       ok: false,
-      error: "Missing client.uid in payload",
-      receivedKeys: Object.keys(payload || {}),
+      error: "Missing uid in payload",
     });
     return;
   }
 
-  const avatarUrl = getAvatarValue(payload);
-  const lastEvent = payload?.event ? String(payload.event) : "Project Updated";
+  const backgroundInfo = asString(payload?.backgroundInfo);
+  const displayName = asString(payload?.displayName) || `${asString(payload?.firstName)} ${asString(payload?.lastName)}`.trim();
+  const email = asString(payload?.email);
+  const lastEvent = asString(payload?.event) || "Project Updated";
   const lastUpdatedAt = new Date().toISOString();
 
-  store.set(clientUID, {
+  const avatarUrl = computeAvatarUrl(payload);
+
+  store.set(uid, {
     avatarUrl,
+    backgroundInfo,
+    displayName,
+    email,
     lastEvent,
     lastUpdatedAt,
     raw: payload,
@@ -56,7 +73,7 @@ function handleWebhook(req, res) {
 
   res.status(200).json({
     ok: true,
-    clientUID,
+    uid,
     stored: {
       avatarUrlPresent: Boolean(avatarUrl),
       lastEvent,
@@ -66,7 +83,7 @@ function handleWebhook(req, res) {
 }
 
 /* =========================
-   Core endpoints
+   Endpoints
 ========================= */
 
 app.get("/va-starter-track/health", (req, res) => {
@@ -74,86 +91,109 @@ app.get("/va-starter-track/health", (req, res) => {
 });
 
 /**
- * Serve embed.js (if you're using it anywhere)
- * File path: /src/embed.js
- */
-app.get("/va-starter-track/embed.js", (req, res) => {
-  res.type("application/javascript");
-  res.sendFile(path.join(__dirname, "embed.js"));
-});
-
-/**
- * SuiteDash webhook receiver (canonical)
- * SuiteDash can be pointed here.
+ * SuiteDash webhook receiver
+ * Destination URL:
+ * https://va-starter-track-proposal-tracker-production.up.railway.app/va-starter-track/webhook
  */
 app.post("/va-starter-track/webhook", handleWebhook);
 
 /**
- * SuiteDash webhook receiver (alias)
- * Your screenshot shows SuiteDash posting to /va-starter-track/payload
- * so this MUST exist for the live test.
+ * Optional alias (keep if you ever point SuiteDash here)
  */
 app.post("/va-starter-track/payload", handleWebhook);
 
-/* =========================
-   Client-facing rendered page
-   (proposal links here)
-========================= */
+/**
+ * Client-facing page
+ * Use in proposal:
+ * https://va-starter-track-proposal-tracker-production.up.railway.app/va-starter-track/c/{{clientUID}}/overview
+ *
+ * NOTE: This now expects {{clientUID}} == webhook payload.uid
+ */
+app.get("/va-starter-track/c/:uid/overview", (req, res) => {
+  const uid = asString(req.params.uid);
+  const record = store.get(uid);
 
-app.get("/va-starter-track/c/:clientUID/overview", (req, res) => {
-  const { clientUID } = req.params;
-  const record = store.get(clientUID);
-
-  const avatarUrl = record?.avatarUrl ? String(record.avatarUrl) : "";
-  const lastEvent = record?.lastEvent ? String(record.lastEvent) : "N/A";
-  const lastUpdatedAt = record?.lastUpdatedAt ? String(record.lastUpdatedAt) : "N/A";
+  const avatarUrl = asString(record?.avatarUrl);
+  const backgroundInfo = asString(record?.backgroundInfo);
+  const displayName = asString(record?.displayName) || "Profile";
+  const email = asString(record?.email);
+  const lastEvent = asString(record?.lastEvent) || "N/A";
+  const lastUpdatedAt = asString(record?.lastUpdatedAt) || "N/A";
 
   res.status(200).type("text/html").send(`<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>VA Starter Track • Profile</title>
+  <title>VA Starter Track • Overview</title>
 </head>
-<body style="font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 24px; background: #0b1020; color: rgba(255,255,255,0.92);">
-  <div style="max-width: 900px; margin: 0 auto;">
-    <h1 style="margin: 0 0 8px 0; font-size: 22px; font-weight: 800;">VA Starter Track • Profile Overview</h1>
-    <p style="margin: 0 0 18px 0; color: rgba(255,255,255,0.75);">
-      Client UID: <strong style="color: rgba(255,255,255,0.92);">${clientUID}</strong>
-    </p>
-
-    <div style="background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); border-radius: 14px; padding: 18px;">
-      <h2 style="margin: 0 0 10px 0; font-size: 16px; font-weight: 800;">Avatar (from SuiteDash CF)</h2>
-
-      ${
-        avatarUrl
-          ? `<img src="${avatarUrl}" alt="Avatar" style="display:block; max-width: 240px; width: 100%; height: auto; border-radius: 14px; border: 1px solid rgba(255,255,255,0.18);" />`
-          : `<div style="padding: 14px; border-radius: 12px; background: rgba(255,255,255,0.04); border: 1px dashed rgba(255,255,255,0.22); color: rgba(255,255,255,0.75);">
-               No avatar value received yet for CF ${CF_AVATAR_ID}.
-             </div>`
-      }
-
-      <div style="margin-top: 14px; color: rgba(255,255,255,0.75); font-size: 13px; line-height: 1.6;">
-        <div><strong style="color: rgba(255,255,255,0.92);">Last event:</strong> ${lastEvent}</div>
-        <div><strong style="color: rgba(255,255,255,0.92);">Last updated:</strong> ${lastUpdatedAt}</div>
+<body style="background:#0b1020;color:rgba(255,255,255,0.92);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;padding:24px;">
+  <div style="margin:0 auto;max-width:980px;">
+    <div style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);border-radius:16px;padding:18px;">
+      <div style="font-size:18px;font-weight:900;letter-spacing:.01em;">${escapeHtml(displayName)}</div>
+      <div style="color:rgba(255,255,255,0.72);font-size:13px;line-height:1.6;margin-top:6px;">
+        <div><strong style="color:rgba(255,255,255,0.9);">Email:</strong> ${escapeHtml(email || "N/A")}</div>
+        <div><strong style="color:rgba(255,255,255,0.9);">Last event:</strong> ${escapeHtml(lastEvent)}</div>
+        <div><strong style="color:rgba(255,255,255,0.9);">Last updated:</strong> ${escapeHtml(lastUpdatedAt)}</div>
+        <div><strong style="color:rgba(255,255,255,0.9);">UID:</strong> ${escapeHtml(uid)}</div>
       </div>
     </div>
 
-    <div style="margin-top: 14px; font-size: 12px; color: rgba(255,255,255,0.6); line-height: 1.6;">
-      <div>Note: This v1 uses in-memory storage. A Railway redeploy clears stored records.</div>
+    <div style="display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin-top:16px;">
+      <div style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);border-radius:16px;padding:18px;">
+        <div style="font-size:14px;font-weight:900;margin-bottom:10px;">Avatar</div>
+        ${
+          record
+            ? avatarUrl
+              ? `<img src="${escapeAttr(avatarUrl)}" alt="Avatar" style="border:1px solid rgba(255,255,255,0.18);border-radius:14px;display:block;height:auto;max-width:260px;width:100%;" />`
+              : `<div style="background:rgba(255,255,255,0.04);border:1px dashed rgba(255,255,255,0.22);border-radius:12px;color:rgba(255,255,255,0.75);padding:12px;line-height:1.6;">
+                   No avatar code found in backgroundInfo.<br />Add one of: FAF, FEU, FPH, MAF, MEU, MPH
+                 </div>`
+            : `<div style="background:rgba(255,255,255,0.04);border:1px dashed rgba(255,255,255,0.22);border-radius:12px;color:rgba(255,255,255,0.75);padding:12px;line-height:1.6;">
+                 No webhook received yet for this UID.<br />Update the project so SuiteDash sends the payload.
+               </div>`
+        }
+      </div>
+
+      <div style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);border-radius:16px;padding:18px;">
+        <div style="font-size:14px;font-weight:900;margin-bottom:10px;">Background info</div>
+        <div style="color:rgba(255,255,255,0.75);line-height:1.7;white-space:pre-wrap;">${escapeHtml(backgroundInfo || "N/A")}</div>
+      </div>
+    </div>
+
+    <div style="color:rgba(255,255,255,0.6);font-size:12px;line-height:1.6;margin-top:16px;">
+      This v1 uses in-memory storage; redeploys clear records.
     </div>
   </div>
 </body>
 </html>`);
 });
 
-/* =========================
-   Optional tracking (no-op)
-========================= */
-
-app.post("/va-starter-track/e/:event", (req, res) => {
-  res.status(204).end();
+/**
+ * Debug endpoint (optional)
+ * Use internally to confirm records exist:
+ * GET /va-starter-track/debug/:uid
+ */
+app.get("/va-starter-track/debug/:uid", (req, res) => {
+  const uid = asString(req.params.uid);
+  const record = store.get(uid) || null;
+  res.json({ ok: true, uid, record });
 });
+
+function escapeAttr(s) {
+  return asString(s)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function escapeHtml(s) {
+  return asString(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Running on ${PORT}`));
