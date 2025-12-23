@@ -5,7 +5,7 @@
   "name": "va-starter-track-proposal-tracker",
   "private": true,
   "scripts": {
-    "start": "node src/server.js"
+    "start": "node src/server.cjs"
   },
   "type": "module",
   "version": "1.0.0"
