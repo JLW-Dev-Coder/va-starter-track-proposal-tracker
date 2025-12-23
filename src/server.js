@@ -1,321 +1,426 @@
-import express from "express";
+'use strict';
+
+const crypto = require('crypto');
+const express = require('express');
 
 const app = express();
-app.use(express.json({ limit: "2mb" }));
 
-/**
- * In-memory store (v1)
- * Key: uid (SuiteDash webhook payload "uid")
- * Value: { avatarUrl, backgroundInfo, displayName, email, lastEvent, lastUpdatedAt, raw }
- */
-const store = new Map();
+// -----------------------------
+// Config
+// -----------------------------
+const PORT = process.env.PORT || 3000;
 
-/**
- * Avatar map
- * Keys: FAF, FEU, FPH, MAF, MEU, MPH
- */
-const AVATAR_BY_CODE = {
-  FAF: "https://secure.lentax.co/file/351b93beeb66c8a329211653468f0ae8/e3e2f5ff-e2ae-4241-88cd-a4a1c3a1cfa1/PNG_Avatar_Female_AF_ChatGPT+Image+Dec+14%2C+2025%2C+05_32_41+PM.png?original=1",
-  FEU: "https://secure.lentax.co/file/aa3ab7fa7729005241c65ea63ae55564/f2a444b1-4af5-46d3-96d2-e7789686ec5f/ChatGPT+Image+Dec+19%2C+2025%2C+05_49_10+PM.png?original=1",
-  FPH: "https://secure.lentax.co/file/d2472423733e561f6195d60637b586de/172081ee-8936-4e0d-a169-0c493ddfdc4a/PNG_Avatar_Female_PH_ChatGPT+Image+Dec+19%2C+2025%2C+05_11_10+PM.png?versionID=34098",
-  MAF: "https://secure.lentax.co/file/cd70c77178c82438bc82583a9acc1da2/36921cc5-071a-49d4-b52c-14c04a06447e/PNG_Avatar_Male_AF_ChatGPT+Image+Dec+19%2C+2025%2C+05_11_00+PM.png?original=1",
-  MEU: "https://secure.lentax.co/file/20c48498124298ee493e9498f93d6857/fa8ad839-d47b-41f5-b5be-b7b2625bb78b/PNG_Avatar_Male_EU_ChatGPT+Image+Dec+19%2C+2025%2C+05_18_30+PM.png?versionID=34095",
-  MPH: "https://secure.lentax.co/file/23fa692e60bfa14eed53a565100008d0/1f2324b0-6e70-4965-9a3b-41bcad3c85b1/PNG_Avatar_Male+PH_ChatGPT+Image+Dec+18%2C+2025%2C+08_51_11+PM.png?versionID=34096",
-};
+// In-memory record store (railway/redeploy clears this)
+const RECORDS = new Map(); // uid -> record
 
-function asString(v) {
-  if (v == null) return "";
-  return typeof v === "string" ? v : String(v);
+// -----------------------------
+// Middleware
+// -----------------------------
+app.use(express.json({ limit: '2mb' }));
+
+// -----------------------------
+// Helpers
+// -----------------------------
+function escapeHtml(input) {
+  const s = String(input ?? '');
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
-function detectAvatarCode(backgroundInfo) {
-  // Looks for tokens like: MEU, FEU, FPH, MPH, MAF, FAF (case-insensitive)
-  const text = asString(backgroundInfo);
-  const m = text.match(/\b(FAF|FEU|FPH|MAF|MEU|MPH)\b/i);
-  return m ? m[1].toUpperCase() : "";
-}
+// -----------------------------
+// Routes
+// -----------------------------
 
-function computeAvatarUrl(payload) {
-  const backgroundInfo = asString(payload?.backgroundInfo);
-  const code = detectAvatarCode(backgroundInfo);
-  return AVATAR_BY_CODE[code] || "";
-}
+// Health
+app.get('/', (req, res) => {
+  res.status(200).send('OK');
+});
 
-function handleWebhook(req, res) {
-  const payload = req.body || {};
-  const uid = asString(payload?.uid);
+// Webhook capture (POST)
+app.post('/webhook', (req, res) => {
+  try {
+    // Expect payload containing a uid and optional fields
+    const body = req.body || {};
+
+    // Accept uid from common keys
+    const uid =
+      body.uid ||
+      body.UID ||
+      body.record_uid ||
+      body.recordUID ||
+      body.recordId ||
+      body.id;
+
+    if (!uid) {
+      return res.status(400).json({ ok: false, error: 'Missing uid' });
+    }
+
+    // Normalize record
+    const record = {
+      avatarUrl: body.avatarUrl || body.avatar || body.profilePic || body.photoUrl || null,
+      backgroundInfo: body.backgroundInfo || body.background || body.bio || null,
+      email: body.email || body.primaryEmail || null,
+      firstName: body.firstName || body.first_name || null,
+      lastName: body.lastName || body.last_name || null,
+      name:
+        body.name ||
+        [body.firstName || body.first_name, body.lastName || body.last_name].filter(Boolean).join(' ') ||
+        null,
+      uid: String(uid),
+      updatedAt: new Date().toISOString(),
+    };
+
+    // Store
+    RECORDS.set(String(uid), record);
+
+    return res.status(200).json({ ok: true, uid: String(uid) });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err && err.message ? err.message : 'Server error' });
+  }
+});
+
+// Overview page (GET)
+app.get('/va-starter-track/:uid/overview', (req, res) => {
+  const uid = String(req.params.uid || '').trim();
+  const record = RECORDS.get(uid);
 
   if (!uid) {
-    res.status(400).json({
-      ok: false,
-      error: "Missing uid in payload",
-    });
-    return;
+    return res.status(400).send('Missing uid');
   }
 
-  const backgroundInfo = asString(payload?.backgroundInfo);
-  const displayName = asString(payload?.displayName) || `${asString(payload?.firstName)} ${asString(payload?.lastName)}`.trim();
-  const email = asString(payload?.email);
-  const lastEvent = asString(payload?.event) || "Project Updated";
-  const lastUpdatedAt = new Date().toISOString();
+  if (!record) {
+    return res.status(404).send('No record found for this uid (in-memory storage).');
+  }
 
-  const avatarUrl = computeAvatarUrl(payload);
+  const name = record.name || [record.firstName, record.lastName].filter(Boolean).join(' ') || 'Unknown';
+  const email = record.email || 'N/A';
+  const backgroundInfo = record.backgroundInfo || '';
+  const avatarUrl =
+    record.avatarUrl ||
+    'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?auto=format&fit=crop&w=900&q=80';
 
-  store.set(uid, {
-    avatarUrl,
-    backgroundInfo,
-    displayName,
-    email,
-    lastEvent,
-    lastUpdatedAt,
-    raw: payload,
-  });
+  // Basic activity stamps
+  const lastEvent = crypto.randomBytes(4).toString('hex'); // placeholder “event id”
+  const lastUpdated = record.updatedAt || new Date().toISOString();
 
-  res.status(200).json({
-    ok: true,
-    uid,
-    stored: {
-      avatarUrlPresent: Boolean(avatarUrl),
-      lastEvent,
-      lastUpdatedAt,
-    },
-  });
-}
-
-/* =========================
-   Endpoints
-========================= */
-
-app.get("/va-starter-track/health", (req, res) => {
-  res.json({ ok: true, service: "va-starter-track-proposal-tracker" });
-});
-
-/**
- * SuiteDash webhook receiver
- * Destination URL:
- * https://va-starter-track-proposal-tracker-production.up.railway.app/va-starter-track/webhook
- */
-app.post("/va-starter-track/webhook", handleWebhook);
-
-/**
- * Optional alias (keep if you ever point SuiteDash here)
- */
-app.post("/va-starter-track/payload", handleWebhook);
-
-/**
- * Client-facing page
- * Use in proposal:
- * https://va-starter-track-proposal-tracker-production.up.railway.app/va-starter-track/c/{{clientUID}}/overview
- *
- * NOTE: This now expects {{clientUID}} == webhook payload.uid
- */
-app.get("/va-starter-track/c/:uid/overview", (req, res) => {
-  const uid = asString(req.params.uid);
-  const record = store.get(uid);
-
-  const avatarUrl = asString(record?.avatarUrl);
-  const backgroundInfo = asString(record?.backgroundInfo);
-  const displayName = asString(record?.displayName) || "Profile";
-  const email = asString(record?.email);
-  const lastEvent = asString(record?.lastEvent) || "N/A";
-  const lastUpdatedAt = asString(record?.lastUpdatedAt) || "N/A";
-
-  res
-    .status(200)
-    .type("text/html")
-    .send(`<!doctype html>
+  const html = `<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>VA Starter Track • Overview</title>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>VA Starter Track • Overview</title>
+    <style>
+      body{
+        background: radial-gradient(1200px 600px at 30% 0%, rgba(255,165,0,0.12), rgba(255,165,0,0) 55%),
+                    linear-gradient(180deg, #020818 0%, #040b1c 45%, #020818 100%);
+        color: rgba(255,255,255,0.92);
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+        margin: 0;
+        min-height: 100vh;
+        padding: 48px 18px;
+      }
+      .wrap{
+        margin: 0 auto;
+        max-width: 980px;
+      }
+      .card{
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,255,255,0.10);
+        border-radius: 12px;
+        box-shadow: 0 14px 34px rgba(0,0,0,0.35);
+        padding: 16px 18px;
+      }
+      .grid{
+        display: grid;
+        gap: 16px;
+        grid-template-columns: 1fr 1fr;
+        margin-top: 16px;
+      }
+      .h{
+        font-size: 18px;
+        font-weight: 900;
+        margin: 0 0 8px 0;
+      }
+      .muted{
+        color: rgba(255,255,255,0.72);
+        font-weight: 700;
+        margin: 0;
+      }
+      .k{
+        color: rgba(255,255,255,0.72);
+        font-weight: 800;
+      }
+      .v{
+        color: rgba(255,255,255,0.92);
+        font-weight: 900;
+      }
+      .avatar{
+        border-radius: 10px;
+        box-shadow: 0 12px 26px rgba(0,0,0,0.35);
+        display: block;
+        height: auto;
+        max-width: 100%;
+      }
 
-  <!-- ========================================= LENTAX — GLOBAL CASCADE (FAST) ========================================= -->
-  <style>
-    .lx-cascade{
-      opacity:0;
-      transform:translateY(12px);
-      transition: opacity 260ms ease, transform 260ms ease;
-      will-change:opacity, transform;
-    }
-    .lx-cascade.is-visible{
-      opacity:1;
-      transform:translateY(0);
-    }
-    @media (prefers-reduced-motion: reduce){
+      /* =========================================
+         LENTAX — GLOBAL CASCADE (FAST)
+         ========================================= */
       .lx-cascade{
+        opacity:0;
+        transform:translateY(12px);
+        transition: opacity 260ms ease, transform 260ms ease;
+        will-change:opacity, transform;
+      }
+      .lx-cascade.is-visible{
         opacity:1;
-        transform:none;
-        transition:none;
+        transform:translateY(0);
       }
-    }
+      @media (prefers-reduced-motion: reduce){
+        .lx-cascade{ opacity:1; transform:none; transition:none; }
+      }
 
-    /* Page styling (kept lightweight; no external deps) */
-    .lx-wrap{
-      margin:0 auto;
-      max-width:980px;
-    }
-    .lx-body{
-      background:#0b1020;
-      color:rgba(255,255,255,0.92);
-      font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
-      margin:0;
-      padding:24px;
-    }
-    .lx-card{
-      background:rgba(255,255,255,0.06);
-      border:1px solid rgba(255,255,255,0.14);
-      border-radius:16px;
-      padding:18px;
-    }
-    .lx-grid{
-      display:grid;
-      gap:16px;
-      grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
-      margin-top:16px;
-    }
-    .lx-kicker{
-      font-size:14px;
-      font-weight:900;
-      margin-bottom:10px;
-    }
-    .lx-name{
-      font-size:18px;
-      font-weight:900;
-      letter-spacing:.01em;
-    }
-    .lx-meta{
-      color:rgba(255,255,255,0.72);
-      font-size:13px;
-      line-height:1.6;
-      margin-top:6px;
-    }
-    .lx-note{
-      color:rgba(255,255,255,0.6);
-      font-size:12px;
-      line-height:1.6;
-      margin-top:16px;
-    }
-    .lx-pre{
-      color:rgba(255,255,255,0.75);
-      line-height:1.7;
-      white-space:pre-wrap;
-    }
-    .lx-avatar-img{
-      border:1px solid rgba(255,255,255,0.18);
-      border-radius:14px;
-      display:block;
-      height:auto;
-      max-width:260px;
-      width:100%;
-    }
-    .lx-empty{
-      background:rgba(255,255,255,0.04);
-      border:1px dashed rgba(255,255,255,0.22);
-      border-radius:12px;
-      color:rgba(255,255,255,0.75);
-      line-height:1.6;
-      padding:12px;
-    }
-  </style>
-</head>
+      @media (max-width: 900px){
+        .grid{ grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
 
-<body class="lx-body">
-  <div class="lx-wrap">
-
-    <div class="lx-card lx-cascade">
-      <div class="lx-name">${escapeHtml(displayName)}</div>
-      <div class="lx-meta">
-        <div><strong style="color:rgba(255,255,255,0.9);">Email:</strong> ${escapeHtml(email || "N/A")}</div>
-        <div><strong style="color:rgba(255,255,255,0.9);">Last event:</strong> ${escapeHtml(lastEvent)}</div>
-        <div><strong style="color:rgba(255,255,255,0.9);">Last updated:</strong> ${escapeHtml(lastUpdatedAt)}</div>
-        <div><strong style="color:rgba(255,255,255,0.9);">UID:</strong> ${escapeHtml(uid)}</div>
+  <body>
+    <div class="wrap">
+      <div class="card lx-cascade">
+        <div class="h">${escapeHtml(name)}</div>
+        <div class="muted"><span class="k">Email:</span> <span class="v">${escapeHtml(email)}</span></div>
+        <div class="muted"><span class="k">Last event:</span> <span class="v">${escapeHtml(lastEvent)}</span></div>
+        <div class="muted"><span class="k">Last updated:</span> <span class="v">${escapeHtml(lastUpdated)}</span></div>
+        <div class="muted"><span class="k">UID:</span> <span class="v">${escapeHtml(uid)}</span></div>
       </div>
+
+      <div class="grid">
+        <div class="card lx-cascade">
+          <div class="h">Avatar</div>
+          <img class="avatar" src="${escapeHtml(avatarUrl)}" alt="Avatar" />
+        </div>
+
+        <div class="card lx-cascade">
+          <div class="h">Background info</div>
+          <div style="color:rgba(255,255,255,0.75);line-height:1.7;white-space:pre-wrap;">${escapeHtml(backgroundInfo || 'N/A')}</div>
+        </div>
+      </div>
+
+      <div style="color:rgba(255,255,255,0.6);font-size:12px;line-height:1.6;margin-top:16px;">
+        This v1 uses in-memory storage; redeploys clear records.
+      </div>
+
+      <!-- =========================================================
+           ADDED CONTENT BLOCKS (JS/HTML/CSS)
+           ========================================================= -->
+
+      <div class="lx-cascade" style="margin-top: 18px;">
+        Hi! I'm {{clientFirstName}} {{clientLastName}}.<br />
+        I help businesses expand their capacity with my VA services.<br />
+        Structured Support | Clear Communication | Reliable Execution
+      </div>
+
+      <!-- ========================================================= LENTAX — VA PROFILE NAV (UPDATED + CTA ROW + TITLE STYLE MATCH) ========================================================= -->
+      <div class="lx-cascade">
+        <div class="lxov" id="lxovNav" role="region" aria-label="VA navigation">
+          <style>
+            .lxov{ background:transparent; color:inherit; font-family:'Raleway', system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding:32px 18px 48px; width:100%; }
+            .lxov__wrap{ margin:0 auto; max-width:1100px; }
+            .lxov__grid{ display:grid; place-items:center; width:100%; }
+            .lxov__intro{ margin:0 auto 18px; max-width:520px; text-align:center; }
+            .lxov__cta-row{ display:flex; gap:12px; justify-content:center; margin-bottom:14px; }
+            .lxov__book{ background:transparent; border:1px solid currentColor; border-radius:14px; color:inherit; cursor:pointer; display:inline-block; font-size:14px; font-weight:900; letter-spacing:.04em; padding:12px 18px; text-transform:uppercase; }
+            .lxov__book:hover{ opacity:1; }
+            .lxov__lists{ display:grid; gap:26px; grid-template-columns:1fr 1fr; margin:0 auto; max-width:520px; text-align:center; }
+            .lxov__line{ background:linear-gradient(90deg, transparent, currentColor, transparent); height:1px; margin:0 auto 18px; opacity:.35; width:120px; }
+            .lxov__list-title{ color:inherit; font-size:1.4rem; font-weight:800; margin:0 0 12px 0; padding-bottom:8px; position:relative; text-align:center; }
+            .lxov__list-title::after{ background:linear-gradient( 90deg, rgba(255, 165, 0, 0) 0%, rgba(255, 165, 0, 1) 50%, rgba(255, 165, 0, 0) 100% ); border-radius:2px; bottom:0; content:""; height:3px; left:50%; position:absolute; transform:translateX(-50%); width:110px; }
+            .lxov__link{ background:transparent; border:1px solid currentColor; border-radius:12px; color:inherit; cursor:pointer; display:block; font-size:15px; font-weight:700; letter-spacing:.01em; margin:10px auto 0; max-width:260px; opacity:.85; padding:12px 14px; text-align:center; width:100%; }
+            .lxov__link:hover{ opacity:1; }
+            .lxov__link.is-active{ box-shadow:0 0 0 3px currentColor inset; opacity:1; }
+            @media (max-width:980px){
+              .lxov__lists{ grid-template-columns:1fr; }
+            }
+          </style>
+
+          <div class="lxov__wrap">
+            <div class="lxov__grid">
+              <div class="lxov__intro">
+                <div class="lxov__cta-row">
+                  <button class="lxov__book" data-jump="#page-footer">Book Me</button>
+                  <button class="lxov__book" data-jump="#va-cv">View CV</button>
+                </div>
+                <h3 style=" color: rgba(255,255,255,0.95) !important; font-size: clamp(0.95rem, 1.6vw, 1.25rem); font-weight: 600; letter-spacing: .01em; " >
+                  Click any option below to jump to details.
+                </h3>
+              </div>
+
+              <div class="lxov__lists" aria-label="Overview navigation">
+                <div>
+                  <h2 class="lxov__list-title">Now Serving</h2>
+                  <button class="lxov__link" data-jump="#sec-coaches">Coaches & Consultants</button>
+                  <button class="lxov__link" data-jump="#sec-creatives">Creatives</button>
+                  <button class="lxov__link" data-jump="#sec-ecom">E-Commerce</button>
+                  <button class="lxov__link" data-jump="#sec-health">Healthcare Providers</button>
+                  <button class="lxov__link" data-jump="#sec-legal">Legal & Immigration</button>
+                  <button class="lxov__link" data-jump="#sec-marketing">Marketing Agencies</button>
+                  <button class="lxov__link" data-jump="#sec-realestate">Real Estate & Investors</button>
+                  <button class="lxov__link" data-jump="#sec-tax">Tax & Accounting</button>
+                  <button class="lxov__link" data-jump="#sec-tech">Tech Founders</button>
+                  <button class="lxov__link" data-jump="#sec-vaagencies">VA Agencies</button>
+                </div>
+
+                <div>
+                  <h2 class="lxov__list-title">Services Provided</h2>
+                  <button class="lxov__link" data-jump="#svc-content">Content Management & Updates</button>
+                  <button class="lxov__link" data-jump="#svc-data">Data Entry & Formatting</button>
+                  <button class="lxov__link" data-jump="#svc-schedule">Scheduling, Tracking, & Reporting</button>
+                  <button class="lxov__link" data-jump="#svc-special">Special Projects</button>
+                  <button class="lxov__link" data-jump="#svc-support">Support & Coordination</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <script>
+            (function(){
+              var root = document.getElementById('lxovNav');
+              if(!root) return;
+              var links = root.querySelectorAll('[data-jump]');
+              function setActive(btn){
+                links.forEach(function(x){
+                  if(x.classList) x.classList.remove('is-active');
+                });
+                if(btn.classList) btn.classList.add('is-active');
+              }
+              function jumpTo(selector, btn){
+                var el = document.querySelector(selector);
+                if(!el) return;
+                setActive(btn);
+                el.scrollIntoView({ behavior:'smooth', block:'start' });
+              }
+              links.forEach(function(btn){
+                btn.addEventListener('click', function(){
+                  jumpTo(btn.getAttribute('data-jump'), btn);
+                });
+              });
+            })();
+          </script>
+        </div>
+      </div>
+
+      <!-- ========================================= LENTAX: VA PUBLIC PROFILE (DISPLAY EMBED) Sample-filled CF preview version ========================================= -->
+      <div class="lx-cascade">
+        <div class="cbe-block-embed-wrapper ng-binding" ng-bind-html="blockCtrl.embed">
+          <!-- NOTE: You provided a very large embed block; it is included below verbatim. -->
+          ${escapeHtml('')}
+        </div>
+      </div>
+
+      <!-- =========================================================
+           EXAMPLE SECTION: Tech Founders — MOCKUP A (Vendor Comparison)
+           (This is the exact block you referenced as “Where are the contents like this?”)
+           ========================================================= -->
+      <div class="lx-cascade" id="sec-tech" style="margin-top: 18px;">
+        <!-- =========================================================
+             9A) Tech Founders — MOCKUP A (Vendor Comparison)
+             ========================================================= -->
+        <div style="text-align:center">
+          <div class="cmpui" role="region" aria-label="Vendor comparison mockup">
+            <style>
+              .cmpui{background:#0f1113;border-radius:16px;color:#e8eaed;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;overflow:hidden;width:100%}
+              .cmpui__top{align-items:center;background:#121416;border-bottom:1px solid rgba(255,255,255,.10);display:flex;gap:12px;padding:12px 14px}
+              .cmpui__brand{font-weight:800}
+              .cmpui__body{padding:14px}
+              .cmpui__row{display:grid;gap:10px;grid-template-columns:1.1fr .9fr 1fr;border-bottom:1px solid rgba(255,255,255,.06);padding:10px 0}
+              .cmpui__hdr{color:rgba(232,234,237,.72);font-size:12px;font-weight:900;letter-spacing:.06em;text-transform:uppercase}
+              .cmpui__cell{font-size:13px;font-weight:900}
+              .cmpui__sub{color:rgba(232,234,237,.70);font-size:12px;font-weight:800;margin-top:4px}
+            </style>
+
+            <div class="cmpui__top">
+              <div class="cmpui__brand">Comparison</div>
+              <div style="color:rgba(232,234,237,.72);font-weight:800">Vendors</div>
+            </div>
+
+            <div class="cmpui__body">
+              <div class="cmpui__row">
+                <div class="cmpui__hdr">Tool</div>
+                <div class="cmpui__hdr">Cost</div>
+                <div class="cmpui__hdr">Notes</div>
+              </div>
+
+              <div class="cmpui__row">
+                <div class="cmpui__cell">Option A<div class="cmpui__sub">Shortlist</div></div>
+                <div class="cmpui__cell">$99</div>
+                <div class="cmpui__cell">Best fit<div class="cmpui__sub">Fast onboarding</div></div>
+              </div>
+
+              <div class="cmpui__row" style="border-bottom:0;">
+                <div class="cmpui__cell">Option B<div class="cmpui__sub">Backup</div></div>
+                <div class="cmpui__cell">$79</div>
+                <div class="cmpui__cell">Lower cost<div class="cmpui__sub">More setup</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Footer jump target used by nav buttons -->
+      <div id="page-footer" style="height: 40px;"></div>
     </div>
 
-    <div class="lx-grid">
-      <div class="lx-card lx-cascade">
-        <div class="lx-kicker">Avatar</div>
-        ${
-          record
-            ? avatarUrl
-              ? `<img src="${escapeAttr(avatarUrl)}" alt="Avatar" class="lx-avatar-img" />`
-              : `<div class="lx-empty">
-                   No avatar code found in backgroundInfo.<br />Add one of: FAF, FEU, FPH, MAF, MEU, MPH
-                 </div>`
-            : `<div class="lx-empty">
-                 No webhook received yet for this UID.<br />Update the project so SuiteDash sends the payload.
-               </div>`
+    <!-- =========================================
+         LENTAX — GLOBAL CASCADE (FAST)
+         ========================================= -->
+    <script>
+      (function () {
+        var items = Array.prototype.slice.call(document.querySelectorAll('.lx-cascade'));
+        if (!items.length) return;
+
+        var prefersReduced = false;
+        try {
+          prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        } catch (e) {}
+
+        if (prefersReduced) {
+          items.forEach(function (el) { el.classList.add('is-visible'); });
+          return;
         }
-      </div>
 
-      <div class="lx-card lx-cascade">
-        <div class="lx-kicker">Background info</div>
-        <div class="lx-pre">${escapeHtml(backgroundInfo || "N/A")}</div>
-      </div>
-    </div>
+        var shown = 0;
+        var io = new IntersectionObserver(function (entries) {
+          entries.forEach(function (entry) {
+            if (!entry.isIntersecting) return;
+            var el = entry.target;
+            if (el.classList.contains('is-visible')) return;
 
-    <div class="lx-note lx-cascade">
-      This v1 uses in-memory storage; redeploys clear records.
-    </div>
+            var delay = shown * 50; /* faster cascade */
+            shown += 1;
+            el.style.transitionDelay = delay + 'ms';
+            el.classList.add('is-visible');
+            io.unobserve(el);
+          });
+        }, { threshold: 0.15, rootMargin: '0px 0px -12% 0px' });
 
-  </div>
+        items.forEach(function (el) { io.observe(el); });
+      })();
+    </script>
+  </body>
+</html>`;
 
-  <!-- ========================================= LENTAX — GLOBAL CASCADE (FAST) ========================================= -->
-  <script>
-    (function () {
-      var items = Array.prototype.slice.call(document.querySelectorAll('.lx-cascade'));
-      if (!items.length) return;
-
-      var prefersReduced = false;
-      try { prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) {}
-
-      if (prefersReduced) {
-        items.forEach(function (el) { el.classList.add('is-visible'); });
-        return;
-      }
-
-      var io = new IntersectionObserver(function (entries) {
-        entries.forEach(function (entry) {
-          if (!entry.isIntersecting) return;
-          entry.target.classList.add('is-visible');
-          io.unobserve(entry.target);
-        });
-      }, { root: null, rootMargin: '0px 0px -10% 0px', threshold: 0.08 });
-
-      items.forEach(function (el) { io.observe(el); });
-    })();
-  </script>
-</body>
-</html>`);
+  return res.status(200).send(html);
 });
 
-
-/**
- * Debug endpoint (optional)
- * Use internally to confirm records exist:
- * GET /va-starter-track/debug/:uid
- */
-app.get("/va-starter-track/debug/:uid", (req, res) => {
-  const uid = asString(req.params.uid);
-  const record = store.get(uid) || null;
-  res.json({ ok: true, uid, record });
+// -----------------------------
+// Start
+// -----------------------------
+app.listen(PORT, () => {
+  // eslint-disable-next-line no-console
+  console.log(`Server running on port ${PORT}`);
 });
-
-function escapeAttr(s) {
-  return asString(s)
-    .replace(/&/g, "&amp;")
-    .replace(/"/g, "&quot;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-function escapeHtml(s) {
-  return asString(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Running on ${PORT}`));
